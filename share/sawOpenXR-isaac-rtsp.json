@@ -1,0 +1,13 @@
+{
+  "name": "OpenXR",
+  "gst_input": "rtspsrc location=rtsp://127.0.0.1:8554/ECM/stereo protocols=udp latency=0 buffer-mode=none drop-on-latency=true do-retransmission=false ! rtph264depay wait-for-keyframe=true request-keyframe=true ! h264parse ! nvh264dec max-display-delay=0 ! queue name=quest_video_queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! videoconvert",
+  "eye_size": {
+    "width": 1280,
+    "height": 720
+  },
+  "controls": {
+    "window_move": "hold the right A button and move the right controller",
+    "camera": "left X button",
+    "deadman_clutch": "hold both controller side triggers to release the clutch"
+  }
+}
