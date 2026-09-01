@@ -289,6 +289,9 @@ private:
   uint64_t test_frame_count_ = 0;
   double latest_video_age_ms_ = 0.0;
   bool latest_video_age_valid_ = false;
+  double sender_video_age_ms_ = 0.0;
+  bool sender_video_age_valid_ = false;
+  bool sender_timestamp_logged_ = false;
   bool has_test_frame_ = false;
   struct VideoTexture {
     bool image_initialized = false;
@@ -1129,6 +1132,51 @@ private:
     GstBuffer *buffer = gst_sample_get_buffer(sample);
 
     latest_video_age_valid_ = false;
+    sender_video_age_valid_ = false;
+
+    if (buffer != nullptr) {
+      const GstReferenceTimestampMeta *reference_meta =
+          gst_buffer_get_reference_timestamp_meta(buffer, nullptr);
+
+      if (reference_meta != nullptr) {
+        const GstClockTime unix_time = static_cast<GstClockTime>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        GstClockTime reference_now = GST_CLOCK_TIME_NONE;
+
+        if (gst_caps_get_size(reference_meta->reference) > 0) {
+          const GstStructure *reference_structure =
+              gst_caps_get_structure(reference_meta->reference, 0);
+          const gchar *reference_name =
+              gst_structure_get_name(reference_structure);
+
+          if (g_strcmp0(reference_name, "timestamp/x-unix") == 0) {
+            reference_now = unix_time;
+          } else if (g_strcmp0(reference_name, "timestamp/x-ntp") == 0) {
+            constexpr GstClockTime ntp_to_unix_seconds = 2208988800ULL;
+            reference_now = unix_time + ntp_to_unix_seconds * GST_SECOND;
+          }
+        }
+
+        if (GST_CLOCK_TIME_IS_VALID(reference_now) &&
+            reference_now >= reference_meta->timestamp) {
+          sender_video_age_ms_ =
+              static_cast<double>(reference_now - reference_meta->timestamp) /
+              static_cast<double>(GST_MSECOND);
+          sender_video_age_valid_ = true;
+        }
+
+        if (!sender_timestamp_logged_) {
+          gchar *reference = gst_caps_to_string(reference_meta->reference);
+          std::cout << "RTSP sender timestamp metadata: "
+                    << (reference != nullptr ? reference : "unknown")
+                    << std::endl;
+          g_free(reference);
+          sender_timestamp_logged_ = true;
+        }
+      }
+    }
 
     if (buffer != nullptr && GST_BUFFER_PTS_IS_VALID(buffer)) {
       const GstSegment *segment = gst_sample_get_segment(sample);
@@ -1543,6 +1591,10 @@ private:
 
         if (latest_video_age_valid_) {
           std::cout << "; latest-video-age=" << latest_video_age_ms_ << " ms";
+        }
+
+        if (sender_video_age_valid_) {
+          std::cout << "; sender-video-age=" << sender_video_age_ms_ << " ms";
         }
 
         if (video_queue_ != nullptr) {

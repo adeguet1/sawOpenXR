@@ -10,7 +10,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-DEFAULT_SCENE = "ECM_PSM1_PSM2_PSM3_stereo.yaml"
+DEFAULT_SCENE = "ECM_PSM1_PSM2_PSM3_stereo_rtsp.yaml"
 
 
 def _absolute_or_package_path(value, config_directory, default_name):
@@ -84,8 +84,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "isaac_headless",
-            default_value="",
-            description="Optional Isaac Sim headless override; empty uses isaac_config.",
+            default_value="true",
+            description="Isaac Sim headless override; true runs without the desktop window.",
         ),
         DeclareLaunchArgument(
             "dvrk_system_delay",
