@@ -25,12 +25,12 @@ class CISST_EXPORT mtsOpenXR : public mtsTaskContinuous {
 
 public:
   struct ControllerSample {
+    bool session_focused = false;
     bool tracked = false;
-    bool side_trigger_pressed = false;
+    double thumbstick_y = 0.0;
     bool front_trigger_active = false;
     double front_trigger = 0.0;
-    bool a_pressed = false;
-    bool x_pressed = false;
+    bool window_move_pressed = false;
     std::array<double, 3> position{};
     std::array<double, 4> orientation{{0.0, 0.0, 0.0, 1.0}};
     double timestamp = 0.0;
@@ -45,12 +45,12 @@ public:
   void Run(void) override;
   void Cleanup(void) override;
 
-  // Called by the OpenXR action layer.  Side triggers implement the
-  // two-hand deadman clutch; A is reserved for video-window manipulation
-  // and X emulates the camera pedal.
+  // Called by the OpenXR action layer. A/X clutch globally while moving the
+  // video plane, thumbsticks control the local clutches and camera, and index
+  // triggers provide MTM gripper input.
   void UpdateControllerSamples(const ControllerSample &left,
                                const ControllerSample &right);
-  void SetTestSideTriggers(const std::string &command);
+  void SetTestThumbsticks(const std::string &command);
   // Called by the OpenXR action layer.  Console events remain explicit so
   // that a tracking/session fault can release every active control.
   void SetConsoleButton(const std::string &name, const bool pressed);
@@ -77,6 +77,7 @@ protected:
   void ApplyControllerSamples(void);
   void UpdateSafetyState(void);
   void SetOperatorPresent(const bool present, const std::string &reason);
+  void SetLocalClutch(const HandIndex hand, const bool clutched);
   void SetHandOperatingState(const bool enabled);
   void EmitHandOperatingStateEvents(void);
   void SetVirtualMTMState(const std::string &command);
@@ -92,6 +93,8 @@ protected:
   std::array<mtsFunctionWrite, 2> m_operating_state_events;
   std::array<mtsFunctionWrite, 3> m_console_button_events;
   std::array<bool, 3> m_console_button_states{{false, false, false}};
+  std::array<mtsFunctionWrite, 2> m_local_clutch_events;
+  std::array<bool, 2> m_local_clutched{{false, false}};
   OperatorState m_operator_state = DISABLED;
   std::string m_video_pipeline;
   std::string m_video_description;

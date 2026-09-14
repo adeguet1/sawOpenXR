@@ -1,13 +1,8 @@
 {
   "name": "OpenXR",
-  "gst_input": "@dvrk:stereo_alignment:stereo ! videoconvert",
+  "gst_input": "@dvrk:stereo_alignment:stereo ! videoscale ! videoconvert",
   "eye_size": {
     "width": 1280,
     "height": 720
-  },
-  "controls": {
-    "window_move": "hold the right A button and move the right controller",
-    "camera": "left X button",
-    "deadman_clutch": "hold both controller side triggers to release the clutch"
   }
 }

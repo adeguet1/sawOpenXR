@@ -261,9 +261,8 @@ private:
   XrActionSet action_set_ = XR_NULL_HANDLE;
   XrAction quit_action_ = XR_NULL_HANDLE;
   XrAction grab_action_ = XR_NULL_HANDLE;
-  XrAction side_trigger_action_ = XR_NULL_HANDLE;
+  XrAction thumbstick_action_ = XR_NULL_HANDLE;
   XrAction front_trigger_action_ = XR_NULL_HANDLE;
-  XrAction x_action_ = XR_NULL_HANDLE;
   XrAction grip_pose_action_ = XR_NULL_HANDLE;
   std::array<XrPath, 2> hand_paths_{};
   std::array<XrSpace, 2> grip_spaces_{};
@@ -1009,14 +1008,14 @@ private:
     XR_CHECK(xrCreateAction(action_set_, &action_info, &grab_action_));
 
     action_info = {XR_TYPE_ACTION_CREATE_INFO};
-    action_info.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
-    std::strncpy(action_info.actionName, "side_trigger",
+    action_info.actionType = XR_ACTION_TYPE_VECTOR2F_INPUT;
+    std::strncpy(action_info.actionName, "thumbstick",
                  XR_MAX_ACTION_NAME_SIZE - 1);
-    std::strncpy(action_info.localizedActionName, "Side trigger",
+    std::strncpy(action_info.localizedActionName, "Thumbstick",
                  XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1);
     action_info.countSubactionPaths = static_cast<uint32_t>(hand_paths_.size());
     action_info.subactionPaths = hand_paths_.data();
-    XR_CHECK(xrCreateAction(action_set_, &action_info, &side_trigger_action_));
+    XR_CHECK(xrCreateAction(action_set_, &action_info, &thumbstick_action_));
 
     action_info = {XR_TYPE_ACTION_CREATE_INFO};
     action_info.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
@@ -1027,13 +1026,6 @@ private:
     action_info.countSubactionPaths = static_cast<uint32_t>(hand_paths_.size());
     action_info.subactionPaths = hand_paths_.data();
     XR_CHECK(xrCreateAction(action_set_, &action_info, &front_trigger_action_));
-
-    action_info = {XR_TYPE_ACTION_CREATE_INFO};
-    action_info.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
-    std::strncpy(action_info.actionName, "camera", XR_MAX_ACTION_NAME_SIZE - 1);
-    std::strncpy(action_info.localizedActionName, "Camera",
-                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1);
-    XR_CHECK(xrCreateAction(action_set_, &action_info, &x_action_));
 
     action_info = {XR_TYPE_ACTION_CREATE_INFO};
     action_info.actionType = XR_ACTION_TYPE_POSE_INPUT;
@@ -1048,9 +1040,9 @@ private:
     const std::array<XrActionSuggestedBinding, 9> bindings{{
         {quit_action_, path("/user/hand/left/input/menu/click")},
         {grab_action_, path("/user/hand/right/input/a/click")},
-        {x_action_, path("/user/hand/left/input/x/click")},
-        {side_trigger_action_, path("/user/hand/left/input/squeeze/value")},
-        {side_trigger_action_, path("/user/hand/right/input/squeeze/value")},
+        {grab_action_, path("/user/hand/left/input/x/click")},
+        {thumbstick_action_, path("/user/hand/left/input/thumbstick")},
+        {thumbstick_action_, path("/user/hand/right/input/thumbstick")},
         {front_trigger_action_, path("/user/hand/left/input/trigger/value")},
         {front_trigger_action_, path("/user/hand/right/input/trigger/value")},
         {grip_pose_action_, path("/user/hand/left/input/grip/pose")},
@@ -1328,7 +1320,8 @@ private:
     VK_CHECK(vkWaitForFences(vk_.device, 1, &vk_.fence, VK_TRUE, UINT64_MAX));
   }
 
-  void sync_actions(XrTime display_time) {
+  void sync_actions(XrTime display_time, const XrVector3f &eye_midpoint,
+                    const bool eye_pose_valid) {
     XrActiveActionSet active{action_set_, XR_NULL_PATH};
     XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
     sync.countActiveActionSets = 1;
@@ -1355,13 +1348,9 @@ private:
     }
     quit_was_pressed_ = pressed;
 
-    get_info.action = x_action_;
-    get_info.subactionPath = XR_NULL_PATH;
-    XrActionStateBoolean x_state{XR_TYPE_ACTION_STATE_BOOLEAN};
-    XR_CHECK(xrGetActionStateBoolean(session_, &get_info, &x_state));
-
     std::array<sawOpenXR::ControllerState, 2> controller_states{};
-    controller_states[0].x_pressed = x_state.isActive && x_state.currentState;
+    std::array<XrPosef, 2> grip_poses{};
+    std::array<bool, 2> grip_valids{};
 
     for (uint32_t hand = 0; hand < hand_paths_.size(); ++hand) {
       get_info.action = grab_action_;
@@ -1370,10 +1359,9 @@ private:
       XR_CHECK(xrGetActionStateBoolean(session_, &get_info, &grab_state));
       const bool grab_pressed = grab_state.isActive && grab_state.currentState;
 
-      get_info.action = side_trigger_action_;
-      get_info.subactionPath = hand_paths_[hand];
-      XrActionStateFloat side_trigger_state{XR_TYPE_ACTION_STATE_FLOAT};
-      XR_CHECK(xrGetActionStateFloat(session_, &get_info, &side_trigger_state));
+      get_info.action = thumbstick_action_;
+      XrActionStateVector2f thumbstick_state{XR_TYPE_ACTION_STATE_VECTOR2F};
+      XR_CHECK(xrGetActionStateVector2f(session_, &get_info, &thumbstick_state));
 
       get_info.action = front_trigger_action_;
       get_info.subactionPath = hand_paths_[hand];
@@ -1391,30 +1379,25 @@ private:
                                XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
 
       auto &controller_state = controller_states[hand];
-      controller_state.tracked = grip_valid;
-      controller_state.side_trigger_pressed =
-          side_trigger_state.isActive &&
-          side_trigger_state.currentState >= 0.5f;
+      controller_state.session_focused = true;
+      grip_valids[hand] = grip_valid;
+      if (grip_valid) {
+        grip_poses[hand] = grip_location.pose;
+      }
+      controller_state.thumbstick_y = thumbstick_state.isActive
+                                          ? thumbstick_state.currentState.y
+                                          : 0.0;
       controller_state.front_trigger_active = front_trigger_state.isActive;
       controller_state.front_trigger = std::clamp(
           static_cast<double>(front_trigger_state.currentState), 0.0, 1.0);
-      controller_state.a_pressed = hand == 1 && grab_pressed;
+      controller_state.window_move_pressed = grab_pressed;
       controller_state.timestamp =
           std::chrono::duration<double>(
               std::chrono::steady_clock::now().time_since_epoch())
               .count();
 
-      if (grip_valid) {
-        controller_state.position = {grip_location.pose.position.x,
-                                     grip_location.pose.position.y,
-                                     grip_location.pose.position.z};
-        controller_state.orientation = {
-            grip_location.pose.orientation.x, grip_location.pose.orientation.y,
-            grip_location.pose.orientation.z, grip_location.pose.orientation.w};
-      }
-
       if (grab_pressed && !grab_was_pressed_[hand] && grabbed_hand_ < 0 &&
-          grip_valid) {
+          grip_valid && video_window_initialized_) {
         grabbed_hand_ = static_cast<int>(hand);
         grab_start_orientation_ = grip_location.pose.orientation;
         grab_start_window_orientation_ = video_window_pose_.orientation;
@@ -1450,6 +1433,37 @@ private:
         }
       }
       grab_was_pressed_[hand] = grab_pressed;
+    }
+
+    // The HRSV origin is the midpoint between the user's eyes, while the
+    // virtual video plane supplies its orientation. Perform this conversion
+    // after processing both grab actions so both hands use the same final
+    // plane orientation, including on the A/X release frame.
+    if (video_window_initialized_ && eye_pose_valid) {
+      const XrQuaternionf plane_inverse =
+          quaternion_conjugate(video_window_pose_.orientation);
+      for (uint32_t hand = 0; hand < hand_paths_.size(); ++hand) {
+        if (!grip_valids[hand]) {
+          continue;
+        }
+
+        const XrVector3f eye_to_grip{
+            grip_poses[hand].position.x - eye_midpoint.x,
+            grip_poses[hand].position.y - eye_midpoint.y,
+            grip_poses[hand].position.z - eye_midpoint.z};
+        const XrVector3f relative_position =
+            rotate_vector(plane_inverse, eye_to_grip);
+        const XrQuaternionf relative_orientation = quaternion_multiply(
+            plane_inverse, grip_poses[hand].orientation);
+
+        auto &controller_state = controller_states[hand];
+        controller_state.tracked = true;
+        controller_state.position = {relative_position.x, relative_position.y,
+                                     relative_position.z};
+        controller_state.orientation = {
+            relative_orientation.x, relative_orientation.y,
+            relative_orientation.z, relative_orientation.w};
+      }
     }
 
     if (controller_callback_) {
@@ -1500,7 +1514,41 @@ private:
       XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};
       XrFrameState frame_state{XR_TYPE_FRAME_STATE};
       XR_CHECK(xrWaitFrame(session_, &wait, &frame_state));
-      sync_actions(frame_state.predictedDisplayTime);
+
+      // Locate the stereo viewer before the controllers. This makes the HRSV
+      // origin and both hand poses correspond to the same predicted time.
+      XrViewLocateInfo reference_locate{XR_TYPE_VIEW_LOCATE_INFO};
+      reference_locate.viewConfigurationType =
+          XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+      reference_locate.displayTime = frame_state.predictedDisplayTime;
+      reference_locate.space = local_space_;
+      XrViewState reference_view_state{XR_TYPE_VIEW_STATE};
+      uint32_t reference_view_count = 0;
+      XR_CHECK(xrLocateViews(session_, &reference_locate, &reference_view_state,
+                             static_cast<uint32_t>(views_.size()),
+                             &reference_view_count, views_.data()));
+      const bool eye_pose_valid =
+          reference_view_count == views_.size() &&
+          (reference_view_state.viewStateFlags &
+           XR_VIEW_STATE_POSITION_VALID_BIT) != 0 &&
+          (reference_view_state.viewStateFlags &
+           XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0;
+      XrVector3f eye_midpoint{};
+      if (eye_pose_valid) {
+        for (uint32_t i = 0; i < reference_view_count; ++i) {
+          eye_midpoint.x += views_[i].pose.position.x;
+          eye_midpoint.y += views_[i].pose.position.y;
+          eye_midpoint.z += views_[i].pose.position.z;
+        }
+        const float inverse_count =
+            1.0f / static_cast<float>(reference_view_count);
+        eye_midpoint.x *= inverse_count;
+        eye_midpoint.y *= inverse_count;
+        eye_midpoint.z *= inverse_count;
+        initialize_video_window_from_head(reference_view_count);
+      }
+      sync_actions(frame_state.predictedDisplayTime, eye_midpoint,
+                   eye_pose_valid);
       XR_CHECK(xrBeginFrame(session_, nullptr));
 
       std::vector<XrCompositionLayerBaseHeader *> layers;

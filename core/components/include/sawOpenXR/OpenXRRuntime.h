@@ -12,12 +12,12 @@
 namespace sawOpenXR {
 
 struct ControllerState {
+  bool session_focused = false;
   bool tracked = false;
-  bool side_trigger_pressed = false;
+  double thumbstick_y = 0.0;
   bool front_trigger_active = false;
   double front_trigger = 0.0;
-  bool a_pressed = false;
-  bool x_pressed = false;
+  bool window_move_pressed = false;
   std::array<double, 3> position{};
   std::array<double, 4> orientation{{0.0, 0.0, 0.0, 1.0}};
   double timestamp = 0.0;

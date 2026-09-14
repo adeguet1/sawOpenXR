@@ -1,0 +1,2 @@
+# Meta/Oculus Android devices (Quest): allow ADB access for local users.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2833", MODE="0666"
