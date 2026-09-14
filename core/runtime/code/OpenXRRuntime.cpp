@@ -261,12 +261,14 @@ private:
   XrActionSet action_set_ = XR_NULL_HANDLE;
   XrAction quit_action_ = XR_NULL_HANDLE;
   XrAction grab_action_ = XR_NULL_HANDLE;
+  XrAction reset_window_action_ = XR_NULL_HANDLE;
   XrAction thumbstick_action_ = XR_NULL_HANDLE;
   XrAction front_trigger_action_ = XR_NULL_HANDLE;
   XrAction grip_pose_action_ = XR_NULL_HANDLE;
   std::array<XrPath, 2> hand_paths_{};
   std::array<XrSpace, 2> grip_spaces_{};
   bool quit_was_pressed_ = false;
+  bool reset_window_was_pressed_ = false;
   std::array<bool, 2> grab_was_pressed_{};
   int grabbed_hand_ = -1;
   XrPosef video_window_pose_{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.5f}};
@@ -1008,6 +1010,14 @@ private:
     XR_CHECK(xrCreateAction(action_set_, &action_info, &grab_action_));
 
     action_info = {XR_TYPE_ACTION_CREATE_INFO};
+    action_info.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    std::strncpy(action_info.actionName, "reset_window",
+                 XR_MAX_ACTION_NAME_SIZE - 1);
+    std::strncpy(action_info.localizedActionName, "Reset video window",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1);
+    XR_CHECK(xrCreateAction(action_set_, &action_info, &reset_window_action_));
+
+    action_info = {XR_TYPE_ACTION_CREATE_INFO};
     action_info.actionType = XR_ACTION_TYPE_VECTOR2F_INPUT;
     std::strncpy(action_info.actionName, "thumbstick",
                  XR_MAX_ACTION_NAME_SIZE - 1);
@@ -1040,7 +1050,7 @@ private:
     const std::array<XrActionSuggestedBinding, 9> bindings{{
         {quit_action_, path("/user/hand/left/input/menu/click")},
         {grab_action_, path("/user/hand/right/input/a/click")},
-        {grab_action_, path("/user/hand/left/input/x/click")},
+        {reset_window_action_, path("/user/hand/left/input/x/click")},
         {thumbstick_action_, path("/user/hand/left/input/thumbstick")},
         {thumbstick_action_, path("/user/hand/right/input/thumbstick")},
         {front_trigger_action_, path("/user/hand/left/input/trigger/value")},
@@ -1070,8 +1080,9 @@ private:
     attach.countActionSets = 1;
     attach.actionSets = &action_set_;
     XR_CHECK(xrAttachSessionActionSets(session_, &attach));
-    std::cerr << "Hold A and move the right controller to position the video "
-                 "window. Press the left Menu button to exit.\n";
+    std::cerr << "Hold right A and move the controller to position the video "
+                 "window. Press left X to reset it in front of you; press the "
+                 "left Menu button to exit.\n";
   }
 
   void poll_events() {
@@ -1348,6 +1359,21 @@ private:
     }
     quit_was_pressed_ = pressed;
 
+    get_info.action = reset_window_action_;
+    get_info.subactionPath = XR_NULL_PATH;
+    XrActionStateBoolean reset_window_state{XR_TYPE_ACTION_STATE_BOOLEAN};
+    XR_CHECK(xrGetActionStateBoolean(session_, &get_info,
+                                     &reset_window_state));
+    const bool reset_window_pressed = reset_window_state.isActive &&
+                                      reset_window_state.currentState;
+    if (reset_window_pressed && !reset_window_was_pressed_ &&
+        eye_pose_valid) {
+      grabbed_hand_ = -1;
+      reset_video_window_in_front_of_head(eye_midpoint);
+      std::cerr << "Video window reset in front of the user.\n";
+    }
+    reset_window_was_pressed_ = reset_window_pressed;
+
     std::array<sawOpenXR::ControllerState, 2> controller_states{};
     std::array<XrPosef, 2> grip_poses{};
     std::array<bool, 2> grip_valids{};
@@ -1438,7 +1464,7 @@ private:
     // The HRSV origin is the midpoint between the user's eyes, while the
     // virtual video plane supplies its orientation. Perform this conversion
     // after processing both grab actions so both hands use the same final
-    // plane orientation, including on the A/X release frame.
+    // plane orientation, including on the A release frame.
     if (video_window_initialized_ && eye_pose_valid) {
       const XrQuaternionf plane_inverse =
           quaternion_conjugate(video_window_pose_.orientation);
@@ -1471,6 +1497,20 @@ private:
     }
   }
 
+  void reset_video_window_in_front_of_head(const XrVector3f &head_position) {
+    // The two eye orientations normally match; use the first eye's
+    // predicted head orientation to make the window face the user.
+    video_window_pose_.orientation = views_[0].pose.orientation;
+    const XrVector3f forward =
+        rotate_vector(video_window_pose_.orientation, {0.0f, 0.0f, -1.0f});
+    constexpr float initial_distance_meters = 1.5f;
+    video_window_pose_.position = {
+        head_position.x + forward.x * initial_distance_meters,
+        head_position.y + forward.y * initial_distance_meters,
+        head_position.z + forward.z * initial_distance_meters};
+    video_window_initialized_ = true;
+  }
+
   void initialize_video_window_from_head(uint32_t view_count) {
     if (video_window_initialized_ || view_count == 0) {
       return;
@@ -1485,17 +1525,7 @@ private:
     head_position.x *= inverse_count;
     head_position.y *= inverse_count;
     head_position.z *= inverse_count;
-    // The two eye orientations normally match; use the first eye's
-    // predicted head orientation to make the window face the user.
-    video_window_pose_.orientation = views_[0].pose.orientation;
-    const XrVector3f forward =
-        rotate_vector(video_window_pose_.orientation, {0.0f, 0.0f, -1.0f});
-    constexpr float initial_distance_meters = 1.5f;
-    video_window_pose_.position = {
-        head_position.x + forward.x * initial_distance_meters,
-        head_position.y + forward.y * initial_distance_meters,
-        head_position.z + forward.z * initial_distance_meters};
-    video_window_initialized_ = true;
+    reset_video_window_in_front_of_head(head_position);
     std::cout
         << "Placed video window 1.5 m in front of the tracked head pose.\n";
   }

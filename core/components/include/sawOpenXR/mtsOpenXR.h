@@ -45,9 +45,9 @@ public:
   void Run(void) override;
   void Cleanup(void) override;
 
-  // Called by the OpenXR action layer. A/X clutch globally while moving the
-  // video plane, thumbsticks control the local clutches and camera, and index
-  // triggers provide MTM gripper input.
+  // Called by the OpenXR action layer. Right A moves the video plane and left
+  // X resets it in front of the user. Thumbsticks control the local clutches
+  // and camera, and index triggers provide MTM gripper input.
   void UpdateControllerSamples(const ControllerSample &left,
                                const ControllerSample &right);
   void SetTestThumbsticks(const std::string &command);

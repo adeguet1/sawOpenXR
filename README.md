@@ -24,10 +24,9 @@ The OpenXR console control mapping is:
   between the HMD eyes and whose axes follow the virtual video plane.  This
   matches the physical da Vinci stereo-viewer geometry used by ECM
   teleoperation.
-- Hold right A or left X and move that controller to position the video
-  window.  The global clutch is pressed while either button is held.  On
-  release, both controller poses are expressed relative to the plane's new
-  pose before the global clutch is released.
+- Hold right A and move the right controller to position the video window.
+  The global clutch is pressed while A is held.  Press left X to reset the
+  window 1.5 m in front of the current HMD pose.
 - Otherwise the global clutch is released; operator-present is always pressed.
 - Pull both thumbsticks toward the user to press the camera pedal.  Releasing
   either thumbstick releases the camera pedal.
@@ -56,8 +55,9 @@ cd $HOME/wss/dvrk/src/cisst-saw/sawOpenXR
 ./scripts/install-wivrn-ubuntu-24.04.sh
 ```
 
-It installs the current stable WiVRn Flatpak into the invoking user's account
-and enables Avahi.  Start `WiVRn server` from the desktop launcher, or from a
+It installs the current stable WiVRn Flatpak into the invoking user's account,
+the OpenXR headers and shader compiler needed to build `saw_openxr`, and
+enables Avahi.  Start `WiVRn server` from the desktop launcher, or from a
 terminal with:
 
 ```bash
@@ -111,7 +111,9 @@ headset.  Restore Wi-Fi with `adb shell svc wifi enable`.
 ### Build dependencies
 
 The WiVRn Flatpak supplies the OpenXR runtime but not the headers and shader
-compiler needed to build `saw_openxr`.  On Ubuntu 24.04 install:
+compiler needed to build `saw_openxr`.  The installer above installs these
+packages automatically.  If WiVRn was installed another way, install them
+manually on Ubuntu 24.04:
 
 ```bash
 sudo apt install libopenxr-dev glslang-tools

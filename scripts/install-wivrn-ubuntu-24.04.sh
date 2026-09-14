@@ -26,7 +26,9 @@ fi
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 sudo apt update
-sudo apt install --yes flatpak avahi-daemon android-sdk-platform-tools
+sudo apt install --yes \
+    flatpak avahi-daemon android-sdk-platform-tools \
+    libopenxr-dev glslang-tools
 
 # Ubuntu 24.04's packaged Android rules do not include Meta/Oculus vendor 2833.
 # Install the deliberately device-scoped mode-0666 rule used for Quest ADB.
