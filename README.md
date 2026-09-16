@@ -13,10 +13,23 @@ Video source configurations:
 - `sawOpenXR-isaac-rtsp.json`: H.264 SBS RTSP from Isaac Sim.
 - `sawOpenXR-dvrk-socket.json`: an existing dVRK abstract GStreamer socket.
 
-Like `dvrk_data` and `dvrk_console`, each configuration uses a root-level
-`gst_input` string.  The string contains the complete source, decode, queue,
-and conversion pipeline, so latency properties can be tuned without rebuilding
-`sawOpenXR`.  The component appends only its RGBA output caps and appsink.
+Each configuration declares the input layout and GStreamer source explicitly:
+
+```json
+"video": {
+  "type": "side-by-side",
+  "gst_input": "@dvrk:stereo_alignment:stereo"
+}
+```
+
+`video.type` is `mono` or `side-by-side`. A mono image is shown to both eyes;
+a side-by-side image is split into equal left and right halves. sawOpenXR gets
+the resolution from negotiated GStreamer caps, so no fixed width or height is
+required. The `gst_input` value accepts the canonical `dvrk_data`
+`@dvrk:<role>:<name>` abstract Unix-FD socket syntax or a regular GStreamer
+pipeline. If a source ends or its socket disappears, sawOpenXR keeps the last
+frame visible and retries the source once per second. A reconnected source must
+keep the initial resolution while the OpenXR session is running.
 
 The OpenXR console control mapping is:
 
@@ -33,6 +46,8 @@ The OpenXR console control mapping is:
 - Push a thumbstick at least 75 percent up/away to release the clutch for that
   controller's PSM only (left: PSM2; right: PSM1). Returning it below the
   threshold clutches that PSM. The index triggers remain the PSM jaws/grippers.
+- Push the left thumbstick left, or the right thumbstick right, and release
+  within 200 ms to emit one `CLICKED` (payload `2`) global-clutch event.
 
 Build the ROS 2 package with colcon from the dVRK workspace:
 

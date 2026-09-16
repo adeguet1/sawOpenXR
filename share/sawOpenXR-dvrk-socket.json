@@ -1,8 +1,7 @@
 {
   "name": "OpenXR",
-  "gst_input": "@dvrk:stereo_alignment:stereo ! videoscale ! videoconvert",
-  "eye_size": {
-    "width": 1280,
-    "height": 720
+  "video": {
+    "type": "side-by-side",
+    "gst_input": "@dvrk:stereo_alignment:stereo"
   }
 }

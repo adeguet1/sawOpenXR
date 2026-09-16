@@ -17,6 +17,7 @@
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -177,15 +178,24 @@ struct VulkanContext {
 
 class App {
 public:
-  App(const std::string &video_pipeline,
+  App(const std::string &video_pipeline, sawOpenXR::VideoType video_type,
       sawOpenXR::OpenXRRuntime::ControllerCallback controller_callback,
+      sawOpenXR::OpenXRRuntime::GStreamerCallback gstreamer_status_callback,
+      sawOpenXR::OpenXRRuntime::GStreamerCallback gstreamer_warning_callback,
       std::atomic_bool &stop_requested)
       : video_pipeline_(video_pipeline),
+        video_type_(video_type),
         controller_callback_(std::move(controller_callback)),
+        gstreamer_status_callback_(std::move(gstreamer_status_callback)),
+        gstreamer_warning_callback_(std::move(gstreamer_warning_callback)),
         stop_requested_(stop_requested) {}
 
   void run() {
-    start_test_source();
+    gst_init(nullptr, nullptr);
+    wait_for_initial_video_frame();
+    if (stop_requested_.load()) {
+      return;
+    }
     create_instance();
     create_session();
     std::cout << "OpenXR session created. Put on the headset; Ctrl+C stops the "
@@ -237,6 +247,18 @@ public:
   }
 
 private:
+  void DispatchGStreamerStatus(const std::string &message) {
+    if (gstreamer_status_callback_) {
+      gstreamer_status_callback_(message);
+    }
+  }
+
+  void DispatchGStreamerWarning(const std::string &message) {
+    if (gstreamer_warning_callback_) {
+      gstreamer_warning_callback_(message);
+    }
+  }
+
   XrInstance instance_ = XR_NULL_HANDLE;
   XrSystemId system_id_ = XR_NULL_SYSTEM_ID;
   XrSession session_ = XR_NULL_HANDLE;
@@ -280,9 +302,9 @@ private:
   VulkanContext vk_;
 
   static constexpr uint32_t eye_count_ = 2;
-  static constexpr uint32_t eye_video_width_ = 1280;
-  static constexpr uint32_t eye_video_height_ = 720;
-  static constexpr uint32_t source_video_width_ = eye_video_width_ * eye_count_;
+  uint32_t eye_video_width_ = 0;
+  uint32_t eye_video_height_ = 0;
+  uint32_t source_video_width_ = 0;
   GstElement *test_pipeline_ = nullptr;
   GstAppSink *test_sink_ = nullptr;
   GstElement *video_queue_ = nullptr;
@@ -294,6 +316,8 @@ private:
   bool sender_video_age_valid_ = false;
   bool sender_timestamp_logged_ = false;
   bool has_test_frame_ = false;
+  bool video_format_checked_ = false;
+  std::chrono::steady_clock::time_point next_video_retry_{};
   struct VideoTexture {
     bool image_initialized = false;
     VkBuffer staging_buffer = VK_NULL_HANDLE;
@@ -316,19 +340,17 @@ private:
   PFN_xrGetVulkanGraphicsDevice2KHR get_graphics_device_ = nullptr;
   PFN_xrCreateVulkanDeviceKHR create_vulkan_device_ = nullptr;
   std::string video_pipeline_;
+  sawOpenXR::VideoType video_type_;
   sawOpenXR::OpenXRRuntime::ControllerCallback controller_callback_;
+  sawOpenXR::OpenXRRuntime::GStreamerCallback gstreamer_status_callback_;
+  sawOpenXR::OpenXRRuntime::GStreamerCallback gstreamer_warning_callback_;
   std::atomic_bool &stop_requested_;
 
-  void start_test_source() {
-    gst_init(nullptr, nullptr);
-    gst_video_info_set_format(&test_video_info_, GST_VIDEO_FORMAT_RGBA,
-                              source_video_width_, eye_video_height_);
-
+  bool start_test_source() {
     const std::string pipeline_description =
         video_pipeline_ +
-        " ! "
-        "video/x-raw,format=RGBA,width=2560,height=720,pixel-aspect-ratio=1/1 "
-        "! "
+        " ! videoconvert ! "
+        "video/x-raw,format=RGBA,pixel-aspect-ratio=1/1 ! "
         "appsink name=quest_test_sink max-buffers=1 drop=true sync=false "
         "processing-deadline=0 enable-last-sample=false";
 
@@ -341,14 +363,14 @@ private:
       if (error != nullptr) {
         g_error_free(error);
       }
-      throw std::runtime_error("Could not create GStreamer RTSP source: " +
+      throw std::runtime_error("Could not create GStreamer video source: " +
                                message);
     }
     GstElement *sink_element =
         gst_bin_get_by_name(GST_BIN(test_pipeline_), "quest_test_sink");
     if (sink_element == nullptr) {
       throw std::runtime_error(
-          "Could not find GStreamer appsink in RTSP source");
+          "Could not find GStreamer appsink in video source");
     }
     test_sink_ = GST_APP_SINK(sink_element);
     gst_app_sink_set_drop(test_sink_, true);
@@ -360,13 +382,13 @@ private:
     const GstStateChangeReturn state =
         gst_element_set_state(test_pipeline_, GST_STATE_PLAYING);
     if (state == GST_STATE_CHANGE_FAILURE) {
-      throw std::runtime_error("Could not start the configured GStreamer "
-                               "video source");
+      DispatchGStreamerWarning(
+          "Could not start the configured GStreamer video source; retrying.");
+      stop_test_source();
+      return false;
     }
-    std::cout << "GStreamer source: " << video_pipeline_ << "; side-by-side "
-              << source_video_width_ << "x" << eye_video_height_
-              << " split into left/right " << eye_video_width_ << "x"
-              << eye_video_height_ << " views.\n";
+    DispatchGStreamerStatus("Connecting GStreamer source: " + video_pipeline_);
+    return true;
   }
 
   void stop_test_source() {
@@ -389,23 +411,27 @@ private:
     }
   }
 
-  void check_stream_bus() {
+  bool check_stream_bus() {
+    if (test_pipeline_ == nullptr) {
+      return false;
+    }
     GstBus *bus = gst_element_get_bus(test_pipeline_);
     GstMessage *message = gst_bus_pop_filtered(
         bus, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS));
     gst_object_unref(bus);
     if (message == nullptr) {
-      return;
+      return true;
     }
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
       gst_message_unref(message);
-      throw std::runtime_error("The RTSP stream ended");
+      DispatchGStreamerWarning("GStreamer video stream ended; reconnecting.");
+      return false;
     }
     GError *error = nullptr;
     gchar *debug = nullptr;
     gst_message_parse_error(message, &error, &debug);
     const std::string message_text =
-        error != nullptr ? error->message : "unknown RTSP pipeline error";
+        error != nullptr ? error->message : "unknown video pipeline error";
     if (debug != nullptr) {
       g_free(debug);
     }
@@ -413,7 +439,95 @@ private:
       g_error_free(error);
     }
     gst_message_unref(message);
-    throw std::runtime_error("GStreamer RTSP stream failed: " + message_text);
+    DispatchGStreamerWarning("GStreamer video stream failed: " + message_text +
+                             "; reconnecting.");
+    return false;
+  }
+
+  GstSample *pull_latest_sample() {
+    if (test_sink_ == nullptr) {
+      return nullptr;
+    }
+    GstSample *sample = nullptr;
+    while (GstSample *candidate = gst_app_sink_try_pull_sample(test_sink_, 0)) {
+      if (sample != nullptr) {
+        gst_sample_unref(sample);
+      }
+      sample = candidate;
+    }
+    return sample;
+  }
+
+  void configure_video_format(GstSample *sample, const bool initial) {
+    GstCaps *caps = gst_sample_get_caps(sample);
+    GstVideoInfo info{};
+    if (caps == nullptr || !gst_video_info_from_caps(&info, caps) ||
+        GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_RGBA) {
+      throw std::runtime_error(
+          "GStreamer video source did not negotiate RGBA video caps");
+    }
+
+    const uint32_t source_width = GST_VIDEO_INFO_WIDTH(&info);
+    const uint32_t source_height = GST_VIDEO_INFO_HEIGHT(&info);
+    if (source_width == 0 || source_height == 0 ||
+        (video_type_ == sawOpenXR::VideoType::SideBySide &&
+         source_width % 2 != 0)) {
+      throw std::runtime_error(
+          "invalid negotiated dimensions for the configured video.type");
+    }
+    const uint32_t eye_width =
+        video_type_ == sawOpenXR::VideoType::Mono ? source_width
+                                                  : source_width / 2;
+
+    if (!initial &&
+        (eye_width != eye_video_width_ || source_height != eye_video_height_)) {
+      throw std::runtime_error(
+          "reconnected video source changed resolution; restart sawOpenXR "
+          "to recreate its Vulkan video textures");
+    }
+
+    test_video_info_ = info;
+    source_video_width_ = source_width;
+    eye_video_width_ = eye_width;
+    eye_video_height_ = source_height;
+    std::ostringstream message;
+    message << "GStreamer video: " << source_video_width_ << "x"
+            << eye_video_height_ << " "
+            << (video_type_ == sawOpenXR::VideoType::Mono ? "mono"
+                                                           : "side-by-side")
+            << "; OpenXR eye image " << eye_video_width_ << "x"
+            << eye_video_height_ << ".";
+    DispatchGStreamerStatus(message.str());
+  }
+
+  void schedule_video_reconnect() {
+    stop_test_source();
+    video_format_checked_ = false;
+    next_video_retry_ =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  }
+
+  void wait_for_initial_video_frame() {
+    DispatchGStreamerStatus("Waiting for the configured video source...");
+    while (!stop_requested_.load()) {
+      if (test_pipeline_ == nullptr &&
+          std::chrono::steady_clock::now() >= next_video_retry_) {
+        if (!start_test_source()) {
+          next_video_retry_ =
+              std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
+      }
+      if (test_pipeline_ != nullptr && !check_stream_bus()) {
+        schedule_video_reconnect();
+      }
+      if (GstSample *sample = pull_latest_sample()) {
+        configure_video_format(sample, true);
+        video_format_checked_ = true;
+        gst_sample_unref(sample);
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
   }
 
   void create_instance() {
@@ -1114,22 +1228,30 @@ private:
   }
 
   bool pull_test_frame() {
-    check_stream_bus();
+    if (test_pipeline_ == nullptr) {
+      if (std::chrono::steady_clock::now() < next_video_retry_ ||
+          !start_test_source()) {
+        next_video_retry_ =
+            std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        return false;
+      }
+    }
+    if (!check_stream_bus()) {
+      schedule_video_reconnect();
+      return false;
+    }
 
     // Keep only the most recent sample even if an older binary or GStreamer
     // implementation allowed more than one sample to reach appsink.
-    GstSample *sample = nullptr;
-
-    while (GstSample *candidate = gst_app_sink_try_pull_sample(test_sink_, 0)) {
-      if (sample != nullptr) {
-        gst_sample_unref(sample);
-      }
-
-      sample = candidate;
-    }
+    GstSample *sample = pull_latest_sample();
 
     if (sample == nullptr) {
       return false;
+    }
+
+    if (!video_format_checked_) {
+      configure_video_format(sample, false);
+      video_format_checked_ = true;
     }
 
     GstBuffer *buffer = gst_sample_get_buffer(sample);
@@ -1172,7 +1294,7 @@ private:
 
         if (!sender_timestamp_logged_) {
           gchar *reference = gst_caps_to_string(reference_meta->reference);
-          std::cout << "RTSP sender timestamp metadata: "
+          std::cout << "Video sender timestamp metadata: "
                     << (reference != nullptr ? reference : "unknown")
                     << std::endl;
           g_free(reference);
@@ -1211,8 +1333,8 @@ private:
         gst_video_frame_map(&frame, &test_video_info_, buffer, GST_MAP_READ);
     if (!mapped) {
       gst_sample_unref(sample);
-      std::cerr << "GStreamer produced an unexpected test frame; waiting for "
-                   "the next one.\n";
+      DispatchGStreamerWarning(
+          "GStreamer produced an unexpected test frame; waiting for the next one.");
       return false;
     }
     const auto *source =
@@ -1226,7 +1348,10 @@ private:
                   source_row, row_size);
       std::memcpy(static_cast<uint8_t *>(video_textures_[1].staging_mapped) +
                       y * row_size,
-                  source_row + row_size, row_size);
+                  source_row +
+                      (video_type_ == sawOpenXR::VideoType::Mono ? 0
+                                                                 : row_size),
+                  row_size);
     }
     gst_video_frame_unmap(&frame);
     gst_sample_unref(sample);
@@ -1410,6 +1535,9 @@ private:
       if (grip_valid) {
         grip_poses[hand] = grip_location.pose;
       }
+      controller_state.thumbstick_x = thumbstick_state.isActive
+                                          ? thumbstick_state.currentState.x
+                                          : 0.0;
       controller_state.thumbstick_y = thumbstick_state.isActive
                                           ? thumbstick_state.currentState.y
                                           : 0.0;
@@ -1619,8 +1747,8 @@ private:
                 XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
             image_wait.timeout = XR_INFINITE_DURATION;
             XR_CHECK(xrWaitSwapchainImage(eye.handle, &image_wait));
-            // The RTSP frame contains left and right halves; each eye
-            // uploads and samples its corresponding half.
+            // Mono frames are duplicated; side-by-side frames contribute the
+            // corresponding half to each eye.
             const Mat4 mvp =
                 multiply(projection_matrix(views_[i].fov),
                          multiply(inverse_rigid_matrix(views_[i].pose),
@@ -1661,18 +1789,18 @@ private:
       ++frame_count;
       const auto now = std::chrono::steady_clock::now();
       if (now - last_status >= std::chrono::seconds(1)) {
-        std::cout << "XR loop heartbeat: " << frame_count << " frames, "
-                  << rendered_frame_count
-                  << " rendered; GStreamer frames=" << test_frame_count_
-                  << "; shouldRender="
+        std::ostringstream heartbeat;
+        heartbeat << "XR loop heartbeat: " << frame_count << " frames, "
+                  << rendered_frame_count << " rendered; GStreamer frames="
+                  << test_frame_count_ << "; shouldRender="
                   << (frame_state.shouldRender ? "true" : "false");
 
         if (latest_video_age_valid_) {
-          std::cout << "; latest-video-age=" << latest_video_age_ms_ << " ms";
+          heartbeat << "; latest-video-age=" << latest_video_age_ms_ << " ms";
         }
 
         if (sender_video_age_valid_) {
-          std::cout << "; sender-video-age=" << sender_video_age_ms_ << " ms";
+          heartbeat << "; sender-video-age=" << sender_video_age_ms_ << " ms";
         }
 
         if (video_queue_ != nullptr) {
@@ -1681,23 +1809,24 @@ private:
 
           g_object_get(video_queue_, "current-level-buffers", &queue_buffers,
                        "current-level-time", &queue_time, nullptr);
-          std::cout << "; decoder-queue=" << queue_buffers << " buffers/"
+          heartbeat << "; decoder-queue=" << queue_buffers << " buffers/"
                     << static_cast<double>(queue_time) /
-                           static_cast<double>(GST_MSECOND)
-                    << " ms";
+                           static_cast<double>(GST_MSECOND) << " ms";
         }
 
         GstStructure *sink_stats = nullptr;
-        g_object_get(test_sink_, "stats", &sink_stats, nullptr);
+        if (test_sink_ != nullptr) {
+          g_object_get(test_sink_, "stats", &sink_stats, nullptr);
+        }
 
         if (sink_stats != nullptr) {
           guint64 dropped = 0;
           gst_structure_get_uint64(sink_stats, "dropped", &dropped);
-          std::cout << "; appsink-dropped=" << dropped;
+          heartbeat << "; appsink-dropped=" << dropped;
           gst_structure_free(sink_stats);
         }
 
-        std::cout << std::endl;
+        std::cout << heartbeat.str();
         last_status = now;
       }
     }
@@ -1707,15 +1836,22 @@ private:
 } // namespace
 
 sawOpenXR::OpenXRRuntime::OpenXRRuntime(const std::string &video_pipeline,
+                                        VideoType video_type,
                                         ControllerCallback controller_callback,
-                                        ErrorCallback error_callback)
-    : m_video_pipeline(video_pipeline),
+                                        ErrorCallback error_callback,
+                                        GStreamerCallback gstreamer_status_callback,
+                                        GStreamerCallback gstreamer_warning_callback)
+    : m_video_pipeline(video_pipeline), m_video_type(video_type),
       m_controller_callback(std::move(controller_callback)),
-      m_error_callback(std::move(error_callback)) {}
+      m_error_callback(std::move(error_callback)),
+      m_gstreamer_status_callback(std::move(gstreamer_status_callback)),
+      m_gstreamer_warning_callback(std::move(gstreamer_warning_callback)) {}
 
 void sawOpenXR::OpenXRRuntime::Run(void) {
   try {
-    App app(m_video_pipeline, m_controller_callback, m_stop_requested);
+    App app(m_video_pipeline, m_video_type, m_controller_callback,
+            m_gstreamer_status_callback, m_gstreamer_warning_callback,
+            m_stop_requested);
 
     app.run();
   } catch (const std::exception &error) {

@@ -98,6 +98,7 @@ void mtsOpenXR::ConfigureInterfaces(void) {
       throw std::runtime_error("failed to create " + hand_names[hand_index] +
                                " interface");
     }
+    m_hand_interfaces[hand_index] = provided;
 
     HandData &hand = m_hands[hand_index];
     hand.measured_cs.SetReferenceFrame("OpenXR_HRSV");
@@ -181,10 +182,27 @@ void mtsOpenXR::ConfigureVideoSource(const std::string &filename) {
     throw std::runtime_error("invalid JSON in " + filename);
   }
 
-  const std::string input = root.get("gst_input", "").asString();
+  const Json::Value video = root["video"];
+
+  if (!video.isObject()) {
+    throw std::runtime_error("configuration requires a root video object");
+  }
+
+  const std::string type = video.get("type", "").asString();
+
+  if (type == "mono") {
+    m_video_type = sawOpenXR::VideoType::Mono;
+  } else if (type == "side-by-side") {
+    m_video_type = sawOpenXR::VideoType::SideBySide;
+  } else {
+    throw std::runtime_error(
+        "video.type must be either \"mono\" or \"side-by-side\"");
+  }
+
+  const std::string input = video.get("gst_input", "").asString();
 
   if (input.empty()) {
-    throw std::runtime_error("configuration requires a root gst_input string");
+    throw std::runtime_error("configuration requires video.gst_input");
   }
 
   m_video_pipeline = ExpandDvrkSocket(input);
@@ -228,11 +246,13 @@ void mtsOpenXR::UpdateControllerSamples(const ControllerSample &left,
 
 void mtsOpenXR::StartOpenXRRuntime(void) {
   m_runtime = std::make_unique<sawOpenXR::OpenXRRuntime>(
-      m_video_pipeline,
+      m_video_pipeline, m_video_type,
       [this](const std::array<sawOpenXR::ControllerState, 2> &controllers) {
         HandleOpenXRControllers(controllers);
       },
-      [this](const std::string &reason) { HandleOpenXRError(reason); });
+      [this](const std::string &reason) { HandleOpenXRError(reason); },
+      [this](const std::string &message) { DispatchMessage(message); },
+      [this](const std::string &message) { DispatchWarning(message); });
 
   m_runtime_thread = std::thread([this]() { m_runtime->Run(); });
 }
@@ -260,6 +280,7 @@ void mtsOpenXR::HandleOpenXRControllers(
     auto &sample = *samples[hand_index];
     sample.tracked = controller.tracked;
     sample.session_focused = controller.session_focused;
+    sample.thumbstick_x = controller.thumbstick_x;
     sample.thumbstick_y = controller.thumbstick_y;
     sample.front_trigger_active = controller.front_trigger_active;
     sample.front_trigger = controller.front_trigger;
@@ -276,6 +297,33 @@ void mtsOpenXR::HandleOpenXRError(const std::string &reason) {
   std::lock_guard<std::mutex> lock(m_samples_mutex);
 
   m_pending_runtime_error = reason;
+}
+
+void mtsOpenXR::DispatchMessage(const std::string &message) {
+  for (auto *interface : m_hand_interfaces) {
+    if (interface) {
+      interface->SendStatus("OpenXR (" + interface->GetName() + "): " +
+                            message);
+    }
+  }
+}
+
+void mtsOpenXR::DispatchWarning(const std::string &message) {
+  for (auto *interface : m_hand_interfaces) {
+    if (interface) {
+      interface->SendWarning("OpenXR (" + interface->GetName() + "): " +
+                             message);
+    }
+  }
+}
+
+void mtsOpenXR::DispatchError(const std::string &message) {
+  for (auto *interface : m_hand_interfaces) {
+    if (interface) {
+      interface->SendError("OpenXR (" + interface->GetName() + "): " +
+                           message);
+    }
+  }
 }
 
 void mtsOpenXR::ApplyControllerSamples(void) {
@@ -349,15 +397,22 @@ void mtsOpenXR::SetTestThumbsticks(const std::string &command) {
   ControllerSample right;
   left.tracked = true;
   right.tracked = true;
+  const double timestamp = StateTable.GetTic();
+  left.timestamp = timestamp;
+  right.timestamp = timestamp;
   left.thumbstick_y =
       command == "both_up" || command == "left_up" ? 1.0 : 0.0;
   right.thumbstick_y =
       command == "both_up" || command == "right_up" ? 1.0 : 0.0;
+  left.thumbstick_x = command == "left_left" ? -1.0 : 0.0;
+  right.thumbstick_x = command == "right_right" ? 1.0 : 0.0;
 
   if (command != "both_up" && command != "left_up" &&
-      command != "right_up" && command != "neutral") {
+      command != "right_up" && command != "left_left" &&
+      command != "right_right" && command != "neutral") {
     CMN_LOG_CLASS_RUN_WARNING
-        << "thumbsticks expects both_up, left_up, right_up, or neutral; "
+        << "thumbsticks expects both_up, left_up, right_up, left_left, "
+           "right_right, or neutral; "
         << "received " << command << std::endl;
     return;
   }
@@ -385,6 +440,13 @@ void mtsOpenXR::SetConsoleButton(const std::string &name, const bool pressed) {
   }
 }
 
+void mtsOpenXR::EmitConsoleButtonClick(const std::string &name) {
+  const size_t index = ConsoleButtonIndex(name);
+  if (m_console_button_events[index].IsValid()) {
+    m_console_button_events[index](prmEventButton(prmEventButton::CLICKED));
+  }
+}
+
 void mtsOpenXR::ReportSessionFailure(const std::string &reason) {
   for (auto &sample : m_samples) {
     sample = ControllerSample();
@@ -392,6 +454,9 @@ void mtsOpenXR::ReportSessionFailure(const std::string &reason) {
 
   CMN_LOG_CLASS_RUN_WARNING << "OpenXR session failure: " << reason
                             << std::endl;
+  DispatchError("OpenXR session failure: " + reason);
+  m_global_clutch_tap_active = false;
+  m_local_clutch_flick_active = {{false, false}};
   SetOperatorPresent(true, "configured as continuously present");
   SetConsoleButton("clutch", false);
   SetLocalClutch(LEFT, true);
@@ -467,6 +532,8 @@ void mtsOpenXR::UpdateSafetyState(void) {
                             m_samples[RIGHT].session_focused;
 
   if (!headset_worn) {
+    m_global_clutch_tap_active = false;
+    m_local_clutch_flick_active = {{false, false}};
     SetConsoleButton("clutch", false);
     SetLocalClutch(LEFT, true);
     SetLocalClutch(RIGHT, true);
@@ -475,17 +542,44 @@ void mtsOpenXR::UpdateSafetyState(void) {
     return;
   }
 
-  // PRESSED means clutched. Moving the video plane clutches both PSMs through
-  // the global clutch. Each thumbstick releases only its own PSM when pushed
-  // at least 75 percent up/away from the user.
+  // PRESSED means clutched. A thumbstick-up flick crosses the threshold once,
+  // toggling only that hand's local clutch. Returning it to neutral re-arms
+  // the next flick; holding it up does not repeatedly toggle the clutch.
   SetOperatorPresent(true, "configured as continuously present");
+  constexpr double global_clutch_tap_thumbstick_threshold = 0.75;
+  // A lateral push and release within 200 ms produces one CLICKED event
+  // (payload 2) for the global clutch. It deliberately does not change the
+  // clutch's pressed state, and is separate from the up/down gestures used
+  // for PSM-local clutch and camera.
+  const bool global_clutch_tap =
+      m_samples[LEFT].thumbstick_x <= -global_clutch_tap_thumbstick_threshold ||
+      m_samples[RIGHT].thumbstick_x >= global_clutch_tap_thumbstick_threshold;
+  const double global_clutch_tap_timestamp =
+      std::max(m_samples[LEFT].timestamp, m_samples[RIGHT].timestamp);
+  if (global_clutch_tap && !m_global_clutch_tap_active) {
+    m_global_clutch_tap_active = true;
+    m_global_clutch_tap_started_at = global_clutch_tap_timestamp;
+  } else if (!global_clutch_tap && m_global_clutch_tap_active) {
+    constexpr double global_clutch_tap_max_duration_s = 0.2;
+    if (global_clutch_tap_timestamp >= m_global_clutch_tap_started_at &&
+        global_clutch_tap_timestamp - m_global_clutch_tap_started_at <=
+            global_clutch_tap_max_duration_s) {
+      EmitConsoleButtonClick("clutch");
+    }
+    m_global_clutch_tap_active = false;
+  }
   SetConsoleButton("clutch", m_samples[LEFT].window_move_pressed ||
                                  m_samples[RIGHT].window_move_pressed);
   constexpr double local_clutch_thumbstick_threshold = 0.75;
-  SetLocalClutch(
-      LEFT, m_samples[LEFT].thumbstick_y < local_clutch_thumbstick_threshold);
-  SetLocalClutch(
-      RIGHT, m_samples[RIGHT].thumbstick_y < local_clutch_thumbstick_threshold);
+  for (size_t hand_index = 0; hand_index < m_samples.size(); ++hand_index) {
+    const bool flick_up =
+        m_samples[hand_index].thumbstick_y >= local_clutch_thumbstick_threshold;
+    if (flick_up && !m_local_clutch_flick_active[hand_index]) {
+      SetLocalClutch(static_cast<HandIndex>(hand_index),
+                     !m_local_clutched[hand_index]);
+    }
+    m_local_clutch_flick_active[hand_index] = flick_up;
+  }
 
   constexpr double camera_thumbstick_threshold = -0.75;
   const bool both_thumbsticks_pulled =

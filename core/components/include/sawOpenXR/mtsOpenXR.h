@@ -27,6 +27,7 @@ public:
   struct ControllerSample {
     bool session_focused = false;
     bool tracked = false;
+    double thumbstick_x = 0.0;
     double thumbstick_y = 0.0;
     bool front_trigger_active = false;
     double front_trigger = 0.0;
@@ -54,6 +55,7 @@ public:
   // Called by the OpenXR action layer.  Console events remain explicit so
   // that a tracking/session fault can release every active control.
   void SetConsoleButton(const std::string &name, const bool pressed);
+  void EmitConsoleButtonClick(const std::string &name);
   void ReportSessionFailure(const std::string &reason);
 
 protected:
@@ -74,6 +76,9 @@ protected:
   void HandleOpenXRControllers(
       const std::array<sawOpenXR::ControllerState, 2> &controllers);
   void HandleOpenXRError(const std::string &reason);
+  void DispatchMessage(const std::string &message);
+  void DispatchWarning(const std::string &message);
+  void DispatchError(const std::string &message);
   void ApplyControllerSamples(void);
   void UpdateSafetyState(void);
   void SetOperatorPresent(const bool present, const std::string &reason);
@@ -91,12 +96,17 @@ protected:
   std::thread m_runtime_thread;
   std::array<HandData, 2> m_hands;
   std::array<mtsFunctionWrite, 2> m_operating_state_events;
+  std::array<mtsInterfaceProvided *, 2> m_hand_interfaces{{nullptr, nullptr}};
   std::array<mtsFunctionWrite, 3> m_console_button_events;
   std::array<bool, 3> m_console_button_states{{false, false, false}};
+  bool m_global_clutch_tap_active = false;
+  double m_global_clutch_tap_started_at = 0.0;
   std::array<mtsFunctionWrite, 2> m_local_clutch_events;
   std::array<bool, 2> m_local_clutched{{false, false}};
+  std::array<bool, 2> m_local_clutch_flick_active{{false, false}};
   OperatorState m_operator_state = DISABLED;
   std::string m_video_pipeline;
+  sawOpenXR::VideoType m_video_type = sawOpenXR::VideoType::SideBySide;
   std::string m_video_description;
   bool m_configured = false;
 };

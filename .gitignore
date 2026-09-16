@@ -1,0 +1,19 @@
+# Local IDE settings
+.vscode/
+.idea/
+
+# CMake and build products
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+Testing/
+
+# Editor and Python transient files
+*~
+*.swp
+__pycache__/
+*.py[cod]
