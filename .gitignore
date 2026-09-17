@@ -4,6 +4,9 @@
 
 # CMake and build products
 build/
+install/
+log/
+logs/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
