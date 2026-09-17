@@ -29,6 +29,7 @@ public:
     bool tracked = false;
     double thumbstick_x = 0.0;
     double thumbstick_y = 0.0;
+    bool thumbstick_click = false;
     bool front_trigger_active = false;
     double front_trigger = 0.0;
     bool window_move_pressed = false;
@@ -103,7 +104,6 @@ protected:
   double m_global_clutch_tap_started_at = 0.0;
   std::array<mtsFunctionWrite, 2> m_local_clutch_events;
   std::array<bool, 2> m_local_clutched{{false, false}};
-  std::array<bool, 2> m_local_clutch_flick_active{{false, false}};
   OperatorState m_operator_state = DISABLED;
   std::string m_video_pipeline;
   sawOpenXR::VideoType m_video_type = sawOpenXR::VideoType::SideBySide;

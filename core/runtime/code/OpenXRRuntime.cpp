@@ -285,6 +285,7 @@ private:
   XrAction grab_action_ = XR_NULL_HANDLE;
   XrAction reset_window_action_ = XR_NULL_HANDLE;
   XrAction thumbstick_action_ = XR_NULL_HANDLE;
+  XrAction thumbstick_click_action_ = XR_NULL_HANDLE;
   XrAction front_trigger_action_ = XR_NULL_HANDLE;
   XrAction grip_pose_action_ = XR_NULL_HANDLE;
   std::array<XrPath, 2> hand_paths_{};
@@ -1142,6 +1143,17 @@ private:
     XR_CHECK(xrCreateAction(action_set_, &action_info, &thumbstick_action_));
 
     action_info = {XR_TYPE_ACTION_CREATE_INFO};
+    action_info.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    std::strncpy(action_info.actionName, "thumbstick_click",
+                 XR_MAX_ACTION_NAME_SIZE - 1);
+    std::strncpy(action_info.localizedActionName, "Thumbstick click",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1);
+    action_info.countSubactionPaths = static_cast<uint32_t>(hand_paths_.size());
+    action_info.subactionPaths = hand_paths_.data();
+    XR_CHECK(
+        xrCreateAction(action_set_, &action_info, &thumbstick_click_action_));
+
+    action_info = {XR_TYPE_ACTION_CREATE_INFO};
     action_info.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
     std::strncpy(action_info.actionName, "front_trigger",
                  XR_MAX_ACTION_NAME_SIZE - 1);
@@ -1161,12 +1173,16 @@ private:
     action_info.subactionPaths = hand_paths_.data();
     XR_CHECK(xrCreateAction(action_set_, &action_info, &grip_pose_action_));
 
-    const std::array<XrActionSuggestedBinding, 9> bindings{{
+    const std::array<XrActionSuggestedBinding, 11> bindings{{
         {quit_action_, path("/user/hand/left/input/menu/click")},
         {grab_action_, path("/user/hand/right/input/a/click")},
         {reset_window_action_, path("/user/hand/left/input/x/click")},
         {thumbstick_action_, path("/user/hand/left/input/thumbstick")},
         {thumbstick_action_, path("/user/hand/right/input/thumbstick")},
+        {thumbstick_click_action_,
+         path("/user/hand/left/input/thumbstick/click")},
+        {thumbstick_click_action_,
+         path("/user/hand/right/input/thumbstick/click")},
         {front_trigger_action_, path("/user/hand/left/input/trigger/value")},
         {front_trigger_action_, path("/user/hand/right/input/trigger/value")},
         {grip_pose_action_, path("/user/hand/left/input/grip/pose")},
@@ -1511,8 +1527,17 @@ private:
       const bool grab_pressed = grab_state.isActive && grab_state.currentState;
 
       get_info.action = thumbstick_action_;
+      get_info.subactionPath = hand_paths_[hand];
       XrActionStateVector2f thumbstick_state{XR_TYPE_ACTION_STATE_VECTOR2F};
       XR_CHECK(xrGetActionStateVector2f(session_, &get_info, &thumbstick_state));
+
+      get_info.action = thumbstick_click_action_;
+      get_info.subactionPath = hand_paths_[hand];
+      XrActionStateBoolean thumbstick_click_state{XR_TYPE_ACTION_STATE_BOOLEAN};
+      XR_CHECK(xrGetActionStateBoolean(session_, &get_info,
+                                       &thumbstick_click_state));
+      const bool thumbstick_clicked =
+          thumbstick_click_state.isActive && thumbstick_click_state.currentState;
 
       get_info.action = front_trigger_action_;
       get_info.subactionPath = hand_paths_[hand];
@@ -1541,6 +1566,7 @@ private:
       controller_state.thumbstick_y = thumbstick_state.isActive
                                           ? thumbstick_state.currentState.y
                                           : 0.0;
+      controller_state.thumbstick_click = thumbstick_clicked;
       controller_state.front_trigger_active = front_trigger_state.isActive;
       controller_state.front_trigger = std::clamp(
           static_cast<double>(front_trigger_state.currentState), 0.0, 1.0);

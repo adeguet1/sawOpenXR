@@ -44,10 +44,10 @@ The OpenXR console control mapping is:
 - Pull both thumbsticks toward the user to press the camera pedal.  Releasing
   either thumbstick releases the camera pedal.
 - Push a thumbstick at least 75 percent up/away to release the clutch for that
-  controller's PSM only (left: PSM2; right: PSM1). Returning it below the
-  threshold clutches that PSM. The index triggers remain the PSM jaws/grippers.
-- Push the left thumbstick left, or the right thumbstick right, and release
-  within 200 ms to emit one `CLICKED` (payload `2`) global-clutch event.
+  controller's PSM only (left: PSM2; right: PSM1). When not pushed away, that PSM's
+  clutch is pressed (deadman switch). The index triggers remain the PSM jaws/grippers.
+- Press and release either thumb joystick within 500 ms to emit one `CLICKED`
+  (payload `2`) global-clutch quick-tap event.
 
 Build the ROS 2 package with colcon from the dVRK workspace:
 

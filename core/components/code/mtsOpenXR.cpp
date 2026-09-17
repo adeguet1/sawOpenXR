@@ -282,6 +282,7 @@ void mtsOpenXR::HandleOpenXRControllers(
     sample.session_focused = controller.session_focused;
     sample.thumbstick_x = controller.thumbstick_x;
     sample.thumbstick_y = controller.thumbstick_y;
+    sample.thumbstick_click = controller.thumbstick_click;
     sample.front_trigger_active = controller.front_trigger_active;
     sample.front_trigger = controller.front_trigger;
     sample.window_move_pressed = controller.window_move_pressed;
@@ -406,13 +407,19 @@ void mtsOpenXR::SetTestThumbsticks(const std::string &command) {
       command == "both_up" || command == "right_up" ? 1.0 : 0.0;
   left.thumbstick_x = command == "left_left" ? -1.0 : 0.0;
   right.thumbstick_x = command == "right_right" ? 1.0 : 0.0;
+  left.thumbstick_click =
+      command == "both_click" || command == "left_click";
+  right.thumbstick_click =
+      command == "both_click" || command == "right_click";
 
   if (command != "both_up" && command != "left_up" &&
       command != "right_up" && command != "left_left" &&
-      command != "right_right" && command != "neutral") {
+      command != "right_right" && command != "both_click" &&
+      command != "left_click" && command != "right_click" &&
+      command != "neutral") {
     CMN_LOG_CLASS_RUN_WARNING
-        << "thumbsticks expects both_up, left_up, right_up, left_left, "
-           "right_right, or neutral; "
+        << "thumbsticks expects both_up, left_up, right_up, left_click, "
+           "right_click, both_click, or neutral; "
         << "received " << command << std::endl;
     return;
   }
@@ -456,7 +463,6 @@ void mtsOpenXR::ReportSessionFailure(const std::string &reason) {
                             << std::endl;
   DispatchError("OpenXR session failure: " + reason);
   m_global_clutch_tap_active = false;
-  m_local_clutch_flick_active = {{false, false}};
   SetOperatorPresent(true, "configured as continuously present");
   SetConsoleButton("clutch", false);
   SetLocalClutch(LEFT, true);
@@ -533,7 +539,6 @@ void mtsOpenXR::UpdateSafetyState(void) {
 
   if (!headset_worn) {
     m_global_clutch_tap_active = false;
-    m_local_clutch_flick_active = {{false, false}};
     SetConsoleButton("clutch", false);
     SetLocalClutch(LEFT, true);
     SetLocalClutch(RIGHT, true);
@@ -542,43 +547,38 @@ void mtsOpenXR::UpdateSafetyState(void) {
     return;
   }
 
-  // PRESSED means clutched. A thumbstick-up flick crosses the threshold once,
-  // toggling only that hand's local clutch. Returning it to neutral re-arms
-  // the next flick; holding it up does not repeatedly toggle the clutch.
   SetOperatorPresent(true, "configured as continuously present");
-  constexpr double global_clutch_tap_thumbstick_threshold = 0.75;
-  // A lateral push and release within 200 ms produces one CLICKED event
-  // (payload 2) for the global clutch. It deliberately does not change the
-  // clutch's pressed state, and is separate from the up/down gestures used
-  // for PSM-local clutch and camera.
-  const bool global_clutch_tap =
-      m_samples[LEFT].thumbstick_x <= -global_clutch_tap_thumbstick_threshold ||
-      m_samples[RIGHT].thumbstick_x >= global_clutch_tap_thumbstick_threshold;
-  const double global_clutch_tap_timestamp =
+
+  // Overall clutch quicktap: a press and release of either thumb joystick
+  // within 500 ms emits one CLICKED event (payload 2) for the console clutch.
+  const bool thumbstick_clicked =
+      m_samples[LEFT].thumbstick_click || m_samples[RIGHT].thumbstick_click;
+  const double click_timestamp =
       std::max(m_samples[LEFT].timestamp, m_samples[RIGHT].timestamp);
-  if (global_clutch_tap && !m_global_clutch_tap_active) {
+  if (thumbstick_clicked && !m_global_clutch_tap_active) {
     m_global_clutch_tap_active = true;
-    m_global_clutch_tap_started_at = global_clutch_tap_timestamp;
-  } else if (!global_clutch_tap && m_global_clutch_tap_active) {
-    constexpr double global_clutch_tap_max_duration_s = 0.2;
-    if (global_clutch_tap_timestamp >= m_global_clutch_tap_started_at &&
-        global_clutch_tap_timestamp - m_global_clutch_tap_started_at <=
+    m_global_clutch_tap_started_at = click_timestamp;
+  } else if (!thumbstick_clicked && m_global_clutch_tap_active) {
+    constexpr double global_clutch_tap_max_duration_s = 0.5;
+    if (click_timestamp >= m_global_clutch_tap_started_at &&
+        click_timestamp - m_global_clutch_tap_started_at <=
             global_clutch_tap_max_duration_s) {
       EmitConsoleButtonClick("clutch");
     }
     m_global_clutch_tap_active = false;
   }
+
   SetConsoleButton("clutch", m_samples[LEFT].window_move_pressed ||
                                  m_samples[RIGHT].window_move_pressed);
+
+  // Individual PSM clutches act as a deadman switch:
+  // When the thumb is not pushed away (below threshold), the clutch is PRESSED.
+  // When the thumb is pushed away (above threshold), the clutch is RELEASED.
   constexpr double local_clutch_thumbstick_threshold = 0.75;
   for (size_t hand_index = 0; hand_index < m_samples.size(); ++hand_index) {
-    const bool flick_up =
+    const bool pushed_away =
         m_samples[hand_index].thumbstick_y >= local_clutch_thumbstick_threshold;
-    if (flick_up && !m_local_clutch_flick_active[hand_index]) {
-      SetLocalClutch(static_cast<HandIndex>(hand_index),
-                     !m_local_clutched[hand_index]);
-    }
-    m_local_clutch_flick_active[hand_index] = flick_up;
+    SetLocalClutch(static_cast<HandIndex>(hand_index), !pushed_away);
   }
 
   constexpr double camera_thumbstick_threshold = -0.75;

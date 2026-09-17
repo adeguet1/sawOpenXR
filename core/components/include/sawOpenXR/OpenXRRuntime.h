@@ -18,6 +18,7 @@ struct ControllerState {
   bool tracked = false;
   double thumbstick_x = 0.0;
   double thumbstick_y = 0.0;
+  bool thumbstick_click = false;
   bool front_trigger_active = false;
   double front_trigger = 0.0;
   bool window_move_pressed = false;
