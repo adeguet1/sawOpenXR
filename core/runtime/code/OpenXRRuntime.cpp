@@ -271,6 +271,8 @@ private:
   };
   bool session_running_ = false;
   bool exit_requested_ = false;
+  bool shutdown_exit_requested_ = false;
+  std::chrono::steady_clock::time_point shutdown_deadline_{};
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   int64_t color_format_ = 0;
@@ -546,7 +548,10 @@ private:
 
     XrInstanceProperties properties{XR_TYPE_INSTANCE_PROPERTIES};
     XR_CHECK(xrGetInstanceProperties(instance_, &properties));
-    std::cout << "OpenXR runtime: " << properties.runtimeName << "\n";
+    std::cout << "OpenXR runtime: " << properties.runtimeName << " "
+              << XR_VERSION_MAJOR(properties.runtimeVersion) << "."
+              << XR_VERSION_MINOR(properties.runtimeVersion) << "."
+              << XR_VERSION_PATCH(properties.runtimeVersion) << "\n";
 
     XR_CHECK(xrGetInstanceProcAddr(
         instance_, "xrGetVulkanGraphicsRequirements2KHR",
@@ -1689,8 +1694,33 @@ private:
     auto last_status = start;
     uint64_t frame_count = 0;
     uint64_t rendered_frame_count = 0;
-    while (!exit_requested_ && !stop_requested_.load()) {
+    while (!exit_requested_) {
       poll_events();
+
+      if (stop_requested_.load()) {
+        if (session_running_ && !shutdown_exit_requested_) {
+          std::cerr << "Requesting OpenXR session shutdown.\n";
+          XR_CHECK(xrRequestExitSession(session_));
+          shutdown_exit_requested_ = true;
+          shutdown_deadline_ =
+              std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        }
+
+        // xrEndSession is valid only after the runtime sends STOPPING.  Keep
+        // polling for that event instead of destroying a running session.
+        if (!session_running_ && !shutdown_exit_requested_) {
+          return;
+        }
+        if (shutdown_exit_requested_ &&
+            std::chrono::steady_clock::now() >= shutdown_deadline_) {
+          std::cerr << "Timed out waiting for OpenXR session shutdown; "
+                       "destroying remaining resources.\n";
+          return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        continue;
+      }
+
       if (!session_running_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         continue;
